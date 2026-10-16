@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Даша и Саша — игра о жизни</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0d0d0d; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; image-rendering: pixelated; max-width: 100vw; max-height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="game" width="1280" height="720"></canvas>
+<script>
+'use strict';
+
+// Свадебный подарок: 2D-игра о жизни Даши и Саши (вид сверху).
+// Чистый HTML5 + Canvas 2D: без библиотек, сборки и внешних файлов,
+// все спрайты рисуются кодом.
+
+(() => {
+
+// ============================================================
+// КОНСТАНТЫ
+// ============================================================
+const CANVAS_WIDTH = 1280;
+const CANVAS_HEIGHT = 720;
+const FIXED_STEP = 1 / 60; // фиксированный шаг игрового цикла (60 FPS)
+const PLAYER_RADIUS = 26;
+
+const COLORS = {
+  lawn: '#5f9e4f',
+  lawnDark: '#4d8540',
+  buildingRoof: '#b0563a',
+  buildingRoofDark: '#8d4029',
+  buildingRoofRidge: '#c96b4d',
+  buildingWall: '#d9cfbf',
+  window: '#9fd4e8',
+  door: '#6b4a2f',
+  doorStep: '#c8c2b6',
+  sidewalk: '#b9b3a8',
+  sidewalkDark: '#9d978c',
+  road: '#45454c',
+  roadLine: '#e8e8e0',
+  corridorFloor: '#d8c8a8',
+  corridorFloorLine: 'rgba(0, 0, 0, 0.06)',
+  corridorWall: '#5f4a38',
+  corridorWallEdge: '#4a3a2c',
+  doorWood: '#8a6540',
+  doorWoodDark: '#5f452c',
+  highlight: '#ffd93b',
+  classroomFloor: '#cdbb97',
+  classroomFloorLine: 'rgba(0, 0, 0, 0.05)',
+  classroomWall: '#6f5c45',
+  blackboard: '#2f4a35',
+  desk: '#8b5a2b',
+  deskDark: '#6e4520',
+  dasha: '#ffd93b',
+  sasha: '#e0432f',
+  teacher: '#2f3f7f',
+  teacherBrows: '#d84a3a',
+  cheatSheet: '#fdfdf6',
+  sashaBar: '#e0432f',
+  dashaBar: '#ffd93b',
+  white: '#ffffff'
+};
+
+const TIMINGS = {
+  preview1Duration: 3.0,       // сцена 1 целиком
+  preview1WalkDuration: 2.0,   // герои идут к зданию
+  preview2Duration: 4.0,       // сцена 2 целиком
+  preview2WalkDuration: 2.4,   // идут к двери «Английский»
+  preview2EnterDuration: 1.0,  // заходят в дверь
+  teacherFirstIdleMin: 2.2,    // первая пауза чуть длиннее, чтобы прочитать подсказку
+  teacherFirstIdleMax: 3.0,
+  teacherIdleMin: 1.5,         // пауза между взглядами
+  teacherIdleMax: 3.0,
+  teacherLookMin: 1.0,         // длительность взгляда
+  teacherLookMax: 1.5,
+  teacherCheckDelayMin: 0.35,  // момент проверки внутри взгляда
+  progressGain: 2,             // +% за спрятанную шпаргалку
+  progressPenalty: 10,         // -% за открытую шпаргалку на взгляде
+  hintDuration: 8              // сколько висит подсказка на уровне 1
+};
+
+// ============================================================
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ============================================================
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function clamp01(value) {
+  return clamp(value, 0, 1);
+}
+
+function lerp(start, end, t) {
+  return start + (end - start) * t;
+}
+
+function easeInOut(t) {
+  const p = clamp01(t);
+  return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+}
+
+function randomRange(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+function fadeInAlpha(time, duration = 0.45) {
+  return clamp01(1 - time / duration);
+}
+
+function fadeOutAlpha(time, startTime, duration = 0.35) {
+  return clamp01((time - startTime) / duration);
+}
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+function drawText(text, x, y, size, color, options = {}) {
+  const {
+    align = 'center',
+    baseline = 'middle',
+    bold = true,
+    shadow = true
+  } = options;
+  ctx.font = `${bold ? 'bold ' : ''}${size}px "Trebuchet MS", "Segoe UI", Arial, sans-serif`;
+  ctx.textAlign = align;
+  ctx.textBaseline = baseline;
+  if (shadow) {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillText(text, x + 2, y + 2);
+  }
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+}
+
+// Персонаж: цветной круг с буквой внутри (пока нет фото)
+function drawCharacter(x, y, radius, color, letter) {
+  if (radius <= 0.5) return;
+
+  ctx.beginPath();
+  ctx.ellipse(x + 4, y + 8, radius, radius * 0.85, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
+  ctx.stroke();
+
+  ctx.font = `bold ${Math.round(radius * 1.05)}px "Trebuchet MS", "Segoe UI", Arial, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.fillText(letter, x + 1, y + 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(letter, x, y);
+}
+
+function drawFadeOverlay(alpha) {
+  if (alpha <= 0.001) return;
+  ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(1, alpha).toFixed(3)})`;
+  ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+}
+
+// ============================================================
+// УНИВЕРСАЛЬНАЯ СИСТЕМА УПРАВЛЕНИЯ (заложена под все уровни 1-5)
+// Даша:  WASD + Space (действие 1) + E (действие 2)
+// Саша:  стрелки + Enter (действие 1) + RightShift (действие 2)
+// ============================================================
+const INPUT = {
+  keyMap: {
+    KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd',
+    Space: 'space', KeyE: 'e',
+    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+    Enter: 'enter', NumpadEnter: 'enter',
+    ShiftRight: 'rshift'
+  },
+  KEY_LIST: ['w', 'a', 's', 'd', 'space', 'e', 'up', 'down', 'left', 'right', 'enter', 'rshift'],
+
+  keys: {},
+  pressed: {},
+  prevEffective: {},
+  suppressed: {},
+
+  init() {
+    for (const key of this.KEY_LIST) {
+      this.keys[key] = false;
+      this.pressed[key] = false;
+      this.prevEffective[key] = false;
+      this.suppressed[key] = false;
+    }
+
+    window.addEventListener('keydown', (event) => {
+      const key = this.keyMap[event.code];
+      if (!key) return;
+      event.preventDefault();
+      this.keys[key] = true;
+    });
+
+    window.addEventListener('keyup', (event) => {
+      const key = this.keyMap[event.code];
+      if (!key) return;
+      event.preventDefault();
+      this.keys[key] = false;
+      this.suppressed[key] = false;
+    });
+
+    window.addEventListener('blur', () => {
+      for (const key of this.KEY_LIST) {
+        this.keys[key] = false;
+        this.suppressed[key] = false;
+      }
+    });
+  },
+
+  isDown(key) {
+    return this.keys[key] && !this.suppressed[key];
+  },
+
+  beginTick() {
+    for (const key of this.KEY_LIST) {
+      this.pressed[key] = this.isDown(key) && !this.prevEffective[key];
+    }
+  },
+
+  endTick() {
+    for (const key of this.KEY_LIST) {
+      this.prevEffective[key] = this.isDown(key);
+    }
+  },
+
+  consumePress(key) {
+    if (this.pressed[key]) {
+      this.pressed[key] = false;
+      return true;
+    }
+    return false;
+  },
+
+  // Игнорировать уже зажатую клавишу до её отпускания и нового нажатия
+  suppress(key) {
+    if (this.keys[key]) this.suppressed[key] = true;
+  }
+};
+
+// Универсальный опрос игрока: { dx, dy, action1, action2 }
+function getPlayerInput(playerId) {
+  if (playerId === 'dasha') {
+    return {
+      dx: (INPUT.isDown('d') ? 1 : 0) - (INPUT.isDown('a') ? 1 : 0),
+      dy: (INPUT.isDown('s') ? 1 : 0) - (INPUT.isDown('w') ? 1 : 0),
+      action1: INPUT.isDown('space'),
+      action2: INPUT.isDown('e')
+    };
+  }
+  return {
+    dx: (INPUT.isDown('right') ? 1 : 0) - (INPUT.isDown('left') ? 1 : 0),
+    dy: (INPUT.isDown('down') ? 1 : 0) - (INPUT.isDown('up') ? 1 : 0),
+    action1: INPUT.isDown('enter'),
+    action2: INPUT.isDown('rshift')
+  };
+}
+
+// ============================================================
+// СОСТОЯНИЯ ИГРЫ
+// PREVIEW_1 -> PREVIEW_2 -> PREVIEW_2_PROMPT -> LEVEL_1 -> LEVEL_1_COMPLETE
+// ============================================================
+let gameState = 'PREVIEW_1';
+let stateTime = 0;
+let level1 = null;
+
+function setState(nextState) {
+  gameState = nextState;
+  stateTime = 0;
+}
+
+// ============================================================
+// СЦЕНА 1 (PREVIEW_1) — «Дорога к зданию»
+// ============================================================
+const PREVIEW1 = {
+  lawnHeight: 380,
+  building: { x: 460, y: 70, w: 360, h: 250 },
+  roofHeight: 200,
+  frontWallHeight: 50,
+  sidewalkTop: { y: 380, h: 70 },
+  road: { y: 450, h: 200 },
+  sidewalkBottomY: 650,
+  crosswalk: { x: 566, width: 148 },
+  dashaX: 602,
+  sashaX: 678,
+  heroStartY: 760,
+  heroTargetY: 420
+};
+
+function updatePreview1() {
+  if (stateTime >= TIMINGS.preview1Duration) {
+    setState('PREVIEW_2');
+  }
+}
+
+function drawPreview1() {
+  const layout = PREVIEW1;
+  const building = layout.building;
+
+  // Газон с кустиками травы
+  ctx.fillStyle = COLORS.lawn;
+  ctx.fillRect(0, 0, CANVAS_WIDTH, layout.lawnHeight);
+  ctx.fillStyle = COLORS.lawnDark;
+  for (let i = 0; i < 70; i++) {
+    const x = (i * 173 + 41) % CANVAS_WIDTH;
+    const y = (i * 97 + 23) % layout.lawnHeight;
+    ctx.fillRect(x, y, 6, 6);
+  }
+
+  // Дорожка от двери к тротуару
+  ctx.fillStyle = COLORS.doorStep;
+  ctx.fillRect(600, building.y + building.h, 80, 60);
+
+  // Тень здания
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+  ctx.fillRect(building.x + 10, building.y + 12, building.w, building.h);
+
+  // Крыша
+  ctx.fillStyle = COLORS.buildingRoof;
+  ctx.fillRect(building.x, building.y, building.w, layout.roofHeight);
+  ctx.strokeStyle = COLORS.buildingRoofDark;
+  ctx.lineWidth = 6;
+  ctx.strokeRect(building.x + 3, building.y + 3, building.w - 6, layout.roofHeight - 6);
+  ctx.fillStyle = COLORS.buildingRoofRidge;
+  ctx.fillRect(building.x + 20, building.y + layout.roofHeight / 2 - 4, building.w - 40, 8);
+
+  // Передняя стена
+  const wallY = building.y + layout.roofHeight;
+  ctx.fillStyle = COLORS.buildingWall;
+  ctx.fillRect(building.x, wallY, building.w, layout.frontWallHeight);
+  ctx.strokeStyle = COLORS.buildingRoofDark;
+  ctx.lineWidth = 4;
+  ctx.strokeRect(building.x + 2, wallY + 2, building.w - 4, layout.frontWallHeight - 4);
+
+  // Окна
+  ctx.fillStyle = COLORS.window;
+  ctx.fillRect(building.x + 50, wallY + 11, 54, 26);
+  ctx.fillRect(building.x + building.w - 104, wallY + 11, 54, 26);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(building.x + 50, wallY + 11, 54, 26);
+  ctx.strokeRect(building.x + building.w - 104, wallY + 11, 54, 26);
+
+  // Дверь и ручка
+  ctx.fillStyle = COLORS.door;
+  ctx.fillRect(600, 280, 80, 40);
+  ctx.strokeStyle = '#4d3520';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(601.5, 281.5, 77, 37);
+  ctx.beginPath();
+  ctx.arc(668, 300, 4, 0, Math.PI * 2);
+  ctx.fillStyle = COLORS.highlight;
+  ctx.fill();
+
+  // Тротуары
+  ctx.fillStyle = COLORS.sidewalk;
+  ctx.fillRect(0, layout.sidewalkTop.y, CANVAS_WIDTH, layout.sidewalkTop.h);
+  ctx.fillRect(0, layout.sidewalkBottomY, CANVAS_WIDTH, CANVAS_HEIGHT - layout.sidewalkBottomY);
+  ctx.fillStyle = COLORS.sidewalkDark;
+  ctx.fillRect(0, layout.sidewalkTop.y + layout.sidewalkTop.h - 6, CANVAS_WIDTH, 6);
+  ctx.fillRect(0, layout.sidewalkBottomY, CANVAS_WIDTH, 6);
+
+  // Дорога и разметка
+  ctx.fillStyle = COLORS.road;
+  ctx.fillRect(0, layout.road.y, CANVAS_WIDTH, layout.road.h);
+  ctx.fillStyle = COLORS.roadLine;
+  for (let x = 20; x < CANVAS_WIDTH; x += 80) {
+    ctx.fillRect(x, 546, 46, 8);
+  }
+
+  // Зебра
+  for (let x = layout.crosswalk.x; x + 16 <= layout.crosswalk.x + layout.crosswalk.width; x += 24) {
+    ctx.fillRect(x, 458, 16, 184);
+  }
+
+  // Даша и Саша идут вверх к зданию
+  const walkProgress = easeInOut(stateTime / TIMINGS.preview1WalkDuration);
+  const heroY = lerp(layout.heroStartY, layout.heroTargetY, walkProgress);
+  const walking = stateTime < TIMINGS.preview1WalkDuration;
+  const bob = walking ? Math.sin(stateTime * 16) * 2.5 : 0;
+
+  drawCharacter(layout.dashaX, heroY + bob, PLAYER_RADIUS, COLORS.dasha, 'Д');
+  drawCharacter(layout.sashaX, heroY - bob, PLAYER_RADIUS, COLORS.sasha, 'С');
+
+  drawFadeOverlay(Math.max(
+    fadeInAlpha(stateTime),
+    fadeOutAlpha(stateTime, TIMINGS.preview1Duration - 0.35)
+  ));
+}
+
+// ============================================================
+// СЦЕНА 2 (PREVIEW_2) — «Коридор с дверями»
+// ============================================================
+const PREVIEW2 = {
+  wallTopHeight: 170,
+  wallBottomY: 610,
+  wallSideWidth: 60,
+  entrance: { x: 440, w: 120 },
+  doors: [
+    { label: 'Немецкий', centerX: 220 },
+    { label: 'Английский', centerX: 500, highlighted: true },
+    { label: 'Китайский', centerX: 780 },
+    { label: 'Французский', centerX: 1060 }
+  ],
+  doorWidth: 132,
+  doorHeight: 86,
+  doorTopY: 104,
+  dashaStartX: 468,
+  sashaStartX: 532,
+  dashaTargetX: 464,
+  sashaTargetX: 536,
+  heroStartY: 760,
+  heroTargetY: 238,
+  heroEnterTargetY: 198
+};
+
+function updatePreview2() {
+  if (stateTime >= TIMINGS.preview2Duration) {
+    setState('PREVIEW_2_PROMPT');
+    INPUT.suppress('enter');
+  }
+}
+
+function drawCorridorDoor(door) {
+  const layout = PREVIEW2;
+  const x = door.centerX - layout.doorWidth / 2;
+  const y = layout.doorTopY;
+
+  // Порог
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+  ctx.fillRect(x + 6, y + layout.doorHeight, layout.doorWidth - 12, 8);
+
+  // Полотно двери
+  ctx.fillStyle = COLORS.doorWood;
+  ctx.fillRect(x, y, layout.doorWidth, layout.doorHeight);
+  ctx.strokeStyle = COLORS.doorWoodDark;
+  ctx.lineWidth = 5;
+  ctx.strokeRect(x + 2.5, y + 2.5, layout.doorWidth - 5, layout.doorHeight - 5);
+
+  // Филёнки
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.18)';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(x + 14, y + 12, layout.doorWidth - 28, 22);
+  ctx.strokeRect(x + 14, y + 52, layout.doorWidth - 28, 22);
+
+  // Ручка
+  ctx.beginPath();
+  ctx.arc(x + layout.doorWidth - 18, y + layout.doorHeight / 2, 5, 0, Math.PI * 2);
+  ctx.fillStyle = COLORS.highlight;
+  ctx.fill();
+
+  // Название двери
+  drawText(door.label, door.centerX, y + layout.doorHeight / 2 - 1, 15, '#f5ead6');
+
+  // Подсветка нужной двери
+  if (door.highlighted) {
+    const pulse = 0.6 + 0.4 * Math.sin(stateTime * 6);
+    ctx.strokeStyle = `rgba(255, 217, 59, ${(0.3 * pulse).toFixed(3)})`;
+    ctx.lineWidth = 12;
+    ctx.strokeRect(x - 6, y - 6, layout.doorWidth + 12, layout.doorHeight + 12);
+    ctx.strokeStyle = `rgba(255, 217, 59, ${(0.55 + 0.45 * pulse).toFixed(3)})`;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(x - 6, y - 6, layout.doorWidth + 12, layout.doorHeight + 12);
+  }
+}
+
+function drawDoorArrow(centerX) {
+  const bounce = Math.sin(stateTime * 5) * 5;
+  const y = 78 + bounce;
+  ctx.beginPath();
+  ctx.moveTo(centerX - 14, y - 12);
+  ctx.lineTo(centerX + 14, y - 12);
+  ctx.lineTo(centerX, y + 6);
+  ctx.closePath();
+  ctx.fillStyle = COLORS.highlight;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+}
+
+function drawPreview2(time) {
+  const layout = PREVIEW2;
+  const floorWidth = CANVAS_WIDTH - layout.wallSideWidth * 2;
+
+  // Пол коридора
+  ctx.fillStyle = COLORS.corridorFloor;
+  ctx.fillRect(layout.wallSideWidth, layout.wallTopHeight, floorWidth, layout.wallBottomY - layout.wallTopHeight);
+
+  // Плитка пола
+  ctx.strokeStyle = COLORS.corridorFloorLine;
+  ctx.lineWidth = 2;
+  for (let x = layout.wallSideWidth + 90; x < CANVAS_WIDTH - layout.wallSideWidth; x += 90) {
+    ctx.beginPath();
+    ctx.moveTo(x, layout.wallTopHeight);
+    ctx.lineTo(x, layout.wallBottomY);
+    ctx.stroke();
+  }
+  for (let y = layout.wallTopHeight + 80; y < layout.wallBottomY; y += 80) {
+    ctx.beginPath();
+    ctx.moveTo(layout.wallSideWidth, y);
+    ctx.lineTo(CANVAS_WIDTH - layout.wallSideWidth, y);
+    ctx.stroke();
+  }
+
+  // Стены
+  ctx.fillStyle = COLORS.corridorWall;
+  ctx.fillRect(0, 0, CANVAS_WIDTH, layout.wallTopHeight);
+  ctx.fillRect(0, layout.wallBottomY, CANVAS_WIDTH, CANVAS_HEIGHT - layout.wallBottomY);
+  ctx.fillRect(0, 0, layout.wallSideWidth, CANVAS_HEIGHT);
+  ctx.fillRect(CANVAS_WIDTH - layout.wallSideWidth, 0, layout.wallSideWidth, CANVAS_HEIGHT);
+
+  // Проём входа снизу
+  ctx.fillStyle = COLORS.corridorFloor;
+  ctx.fillRect(layout.entrance.x, layout.wallBottomY, layout.entrance.w, CANVAS_HEIGHT - layout.wallBottomY);
+  ctx.fillStyle = COLORS.corridorWallEdge;
+  ctx.fillRect(layout.entrance.x - 4, layout.wallBottomY, 4, CANVAS_HEIGHT - layout.wallBottomY);
+  ctx.fillRect(layout.entrance.x + layout.entrance.w, layout.wallBottomY, 4, CANVAS_HEIGHT - layout.wallBottomY);
+
+  // Края стен
+  ctx.fillStyle = COLORS.corridorWallEdge;
+  ctx.fillRect(0, layout.wallTopHeight - 4, CANVAS_WIDTH, 4);
+  ctx.fillRect(0, layout.wallBottomY, layout.entrance.x, 4);
+  ctx.fillRect(layout.entrance.x + layout.entrance.w, layout.wallBottomY,
+    CANVAS_WIDTH - layout.entrance.x - layout.entrance.w, 4);
+
+  // Герои идут к двери «Английский», затем заходят в неё (уменьшаются)
+  const walkProgress = easeInOut(time / TIMINGS.preview2WalkDuration);
+  const dashaX = lerp(layout.dashaStartX, layout.dashaTargetX, walkProgress);
+  const sashaX = lerp(layout.sashaStartX, layout.sashaTargetX, walkProgress);
+  let heroY = lerp(layout.heroStartY, layout.heroTargetY, walkProgress);
+  let radius = PLAYER_RADIUS;
+  let heroesVisible = true;
+
+  const enterProgress = clamp01((time - TIMINGS.preview2WalkDuration) / TIMINGS.preview2EnterDuration);
+  if (enterProgress > 0) {
+    const enterEase = easeInOut(enterProgress);
+    heroY = lerp(layout.heroTargetY, layout.heroEnterTargetY, enterEase);
+    radius = PLAYER_RADIUS * (1 - enterEase);
+    if (enterProgress >= 1) heroesVisible = false;
+  }
+
+  const walking = time < TIMINGS.preview2WalkDuration;
+  const bob = walking ? Math.sin(time * 16) * 2.5 : 0;
+
+  if (heroesVisible) {
+    drawCharacter(dashaX, heroY + bob, radius, COLORS.dasha, 'Д');
+    drawCharacter(sashaX, heroY - bob, radius, COLORS.sasha, 'С');
+  }
+
+  // Двери рисуем поверх героев — так они «заходят за дверь»
+  for (const door of layout.doors) {
+    drawCorridorDoor(door);
+  }
+
+  drawDoorArrow(500);
+
+  drawFadeOverlay(fadeInAlpha(stateTime));
+}
+
+// ============================================================
+// СЦЕНА 2 — ФИНАЛ (PREVIEW_2_PROMPT)
+// ============================================================
+function updatePreview2Prompt() {
+  if (INPUT.consumePress('enter')) {
+    startLevel1();
+  }
+}
+
+function drawPreview2Prompt() {
+  drawPreview2(TIMINGS.preview2Duration);
+
+  const dim = clamp01(stateTime / 0.5) * 0.5;
+  ctx.fillStyle = `rgba(0, 0, 0, ${dim.toFixed(3)})`;
+  ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+  const textAlpha = clamp01((stateTime - 0.35) / 0.5);
+  if (textAlpha > 0) {
+    ctx.globalAlpha = textAlpha;
+    drawText('Нажмите ENTER чтобы продолжить', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, 36, '#ffffff');
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ============================================================
+// УРОВЕНЬ 1 — «Кабинет английского»
+// ============================================================
+const LEVEL1 = {
+  wallThickness: 26,
+  blackboard: { x: 480, y: 3, w: 320, h: 20 },
+  desk: { x: 400, y: 330, w: 480, h: 180 },
+  dashaX: 560,
+  sashaX: 720,
+  studentY: 268,
+  studentRadius: 26,
+  teacherX: 250,
+  teacherY: 420,
+  teacherRadius: 30,
+  sheetWidth: 52,
+  sheetHeight: 30,
+  sheetY: 344,
+  coneLength: 660,
+  coneSpread: 0.52 // ~30 градусов
+};
+
+function startLevel1() {
+  level1 = {
+    dashaProgress: 0,
+    sashaProgress: 0,
+    dashaSheetOpen: false,
+    sashaSheetOpen: false,
+    teacher: {
+      phase: 'idle',
+      phaseTimer: 0,
+      phaseDuration: randomRange(TIMINGS.teacherFirstIdleMin, TIMINGS.teacherFirstIdleMax),
+      checkTime: 0,
+      checkDone: false
+    },
+    flashes: [],
+    floats: [],
+    hintTimer: 0,
+    completeStage: 'victory'
+  };
+  INPUT.suppress('enter');
+  INPUT.suppress('space');
+  setState('LEVEL_1');
+}
+
+function updateLevel1(dt) {
+  const dashaInput = getPlayerInput('dasha');
+  const sashaInput = getPlayerInput('sasha');
+
+  // На уровне 1 движение не используется — только действие 1 (удержание)
+  level1.dashaSheetOpen = dashaInput.action1;
+  level1.sashaSheetOpen = sashaInput.action1;
+
+  level1.hintTimer += dt;
+  updateTeacher(dt);
+
+  for (const flash of level1.flashes) flash.timer += dt;
+  if (level1.flashes.length > 0) {
+    level1.flashes = level1.flashes.filter(flash => flash.timer < flash.duration);
+  }
+
+  for (const float of level1.floats) float.timer += dt;
+  if (level1.floats.length > 0) {
+    level1.floats = level1.floats.filter(float => float.timer < float.duration);
+  }
+
+  if (level1.dashaProgress >= 100 && level1.sashaProgress >= 100) {
+    level1.completeStage = 'victory';
+    INPUT.suppress('enter');
+    setState('LEVEL_1_COMPLETE');
+  }
+}
+
+function updateTeacher(dt) {
+  const teacher = level1.teacher;
+  teacher.phaseTimer += dt;
+
+  if (teacher.phase === 'idle') {
+    if (teacher.phaseTimer >= teacher.phaseDuration) {
+      // Учитель поднимает голову
+      teacher.phase = 'looking';
+      teacher.phaseTimer = 0;
+      teacher.phaseDuration = randomRange(TIMINGS.teacherLookMin, TIMINGS.teacherLookMax);
+      teacher.checkTime = randomRange(TIMINGS.teacherCheckDelayMin, teacher.phaseDuration - 0.15);
+      teacher.checkDone = false;
+    }
+    return;
+  }
+
+  if (!teacher.checkDone && teacher.phaseTimer >= teacher.checkTime) {
+    teacher.checkDone = true;
+    evaluateCheatSheets();
+  }
+
+  if (teacher.phaseTimer >= teacher.phaseDuration) {
+    // Учитель опускает голову
+    teacher.phase = 'idle';
+    teacher.phaseTimer = 0;
+    teacher.phaseDuration = randomRange(TIMINGS.teacherIdleMin, TIMINGS.teacherIdleMax);
+  }
+}
+
+function evaluateCheatSheets() {
+  evaluateHero('dasha');
+  evaluateHero('sasha');
+}
+
+function evaluateHero(heroId) {
+  const isDasha = heroId === 'dasha';
+  const sheetOpen = isDasha ? level1.dashaSheetOpen : level1.sashaSheetOpen;
+  const heroX = isDasha ? LEVEL1.dashaX : LEVEL1.sashaX;
+
+  if (sheetOpen) {
+    // Поймали со шпаргалкой — штраф и красная вспышка над столом
+    addProgress(heroId, -TIMINGS.progressPenalty);
+    level1.flashes.push({
+      x: heroX,
+      y: LEVEL1.sheetY + 12,
+      timer: 0,
+      duration: 0.7
+    });
+    level1.floats.push({
+      text: `−${TIMINGS.progressPenalty}%`,
+      x: heroX,
+      y: 232,
+      color: '#ff5b45',
+      timer: 0,
+      duration: 1.0
+    });
+  } else {
+    // Шпаргалка спрятана — прогресс
+    addProgress(heroId, TIMINGS.progressGain);
+    level1.floats.push({
+      text: `+${TIMINGS.progressGain}%`,
+      x: heroX,
+      y: 232,
+      color: '#7ee081',
+      timer: 0,
+      duration: 1.0
+    });
+  }
+}
+
+function addProgress(heroId, amount) {
+  if (heroId === 'dasha') {
+    level1.dashaProgress = clamp(level1.dashaProgress + amount, 0, 100);
+  } else {
+    level1.sashaProgress = clamp(level1.sashaProgress + amount, 0, 100);
+  }
+}
+
+// ---------- Отрисовка уровня 1 ----------
+
+function drawLevel1() {
+  drawClassroom();
+  drawDesk();
+  drawCheatSheet(LEVEL1.dashaX, level1.dashaSheetOpen);
+  drawCheatSheet(LEVEL1.sashaX, level1.sashaSheetOpen);
+  if (level1.teacher.phase === 'looking') {
+    drawVisionCone();
+  }
+  drawTeacher();
+  drawStudent(LEVEL1.dashaX, COLORS.dasha, 'Д', 'SPACE');
+  drawStudent(LEVEL1.sashaX, COLORS.sasha, 'С', 'ENTER');
+  drawFlashes();
+  drawFloats();
+  drawLevel1Bars();
+  drawLevel1Hint();
+}
+
+function drawClassroom() {
+  const wall = LEVEL1.wallThickness;
+
+  // Пол
+  ctx.fillStyle = COLORS.classroomFloor;
+  ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+  // Паркетные линии
+  ctx.strokeStyle = COLORS.classroomFloorLine;
+  ctx.lineWidth = 2;
+  for (let y = wall + 46; y < CANVAS_HEIGHT - wall; y += 46) {
+    ctx.beginPath();
+    ctx.moveTo(wall, y);
+    ctx.lineTo(CANVAS_WIDTH - wall, y);
+    ctx.stroke();
+  }
+
+  // Стены
+  ctx.fillStyle = COLORS.classroomWall;
+  ctx.fillRect(0, 0, CANVAS_WIDTH, wall);
+  ctx.fillRect(0, CANVAS_HEIGHT - wall, CANVAS_WIDTH, wall);
+  ctx.fillRect(0, 0, wall, CANVAS_HEIGHT);
+  ctx.fillRect(CANVAS_WIDTH - wall, 0, wall, CANVAS_HEIGHT);
+
+  // Плинтус
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.25)';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(wall + 1.5, wall + 1.5,
+    CANVAS_WIDTH - wall * 2 - 3, CANVAS_HEIGHT - wall * 2 - 3);
+
+  // Доска на верхней стене
+  const board = LEVEL1.blackboard;
+  ctx.fillStyle = COLORS.blackboard;
+  ctx.fillRect(board.x, board.y, board.w, board.h);
+  ctx.strokeStyle = '#8a6b3f';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(board.x, board.y, board.w, board.h);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+  ctx.fillRect(board.x + 24, 9, 90, 3);
+  ctx.fillRect(board.x + 24, 16, 60, 3);
+}
+
+function drawDesk() {
+  const desk = LEVEL1.desk;
+
+  // Тень
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+  ctx.fillRect(desk.x + 8, desk.y + 10, desk.w, desk.h);
+
+  // Столешница
+  ctx.fillStyle = COLORS.desk;
+  ctx.fillRect(desk.x, desk.y, desk.w, desk.h);
+
+  // Блик у верхней кромки
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+  ctx.fillRect(desk.x + 8, desk.y + 8, desk.w - 16, 16);
+
+  // Кант
+  ctx.strokeStyle = COLORS.deskDark;
+  ctx.lineWidth = 6;
+  ctx.strokeRect(desk.x + 3, desk.y + 3, desk.w - 6, desk.h - 6);
+}
+
+function drawCheatSheet(x, isOpen) {
+  if (!isOpen) return;
+
+  const sheetWidth = LEVEL1.sheetWidth;
+  const sheetHeight = LEVEL1.sheetHeight;
+  const sheetX = x - sheetWidth / 2;
+  const sheetY = LEVEL1.sheetY;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+  ctx.fillRect(sheetX + 3, sheetY + 4, sheetWidth, sheetHeight);
+
+  ctx.fillStyle = COLORS.cheatSheet;
+  ctx.fillRect(sheetX, sheetY, sheetWidth, sheetHeight);
+  ctx.strokeStyle = '#c9c4b4';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(sheetX + 1, sheetY + 1, sheetWidth - 2, sheetHeight - 2);
+
+  // Строчки текста на шпаргалке
+  ctx.fillStyle = '#b9b2a0';
+  ctx.fillRect(sheetX + 8, sheetY + 8, sheetWidth - 16, 3);
+  ctx.fillRect(sheetX + 8, sheetY + 17, sheetWidth - 24, 3);
+}
+
+function drawTeacher() {
+  const teacher = level1.teacher;
+  const x = LEVEL1.teacherX;
+  const y = LEVEL1.teacherY;
+
+  drawCharacter(x, y, LEVEL1.teacherRadius, COLORS.teacher, 'У');
+
+  // Злые брови
+  ctx.strokeStyle = COLORS.teacherBrows;
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x - 17, y - 21);
+  ctx.lineTo(x - 5, y - 13);
+  ctx.moveTo(x + 17, y - 21);
+  ctx.lineTo(x + 5, y - 13);
+  ctx.stroke();
+  ctx.lineCap = 'butt';
+
+  // «!» над учителем, когда он поднял голову
+  if (teacher.phase === 'looking') {
+    const bounce = Math.sin(teacher.phaseTimer * 12) * 2;
+    drawText('!', x, y - 62 + bounce, 46, '#ff4b3a');
+  }
+}
+
+function drawVisionCone() {
+  const teacher = level1.teacher;
+  const x = LEVEL1.teacherX;
+  const y = LEVEL1.teacherY;
+  const pulse = 0.13 + 0.045 * Math.sin(teacher.phaseTimer * 8);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(LEVEL1.wallThickness, LEVEL1.wallThickness,
+    CANVAS_WIDTH - LEVEL1.wallThickness * 2, CANVAS_HEIGHT - LEVEL1.wallThickness * 2);
+  ctx.clip();
+
+  // Полупрозрачный конус обзора в сторону стола
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.arc(x, y, LEVEL1.coneLength, -LEVEL1.coneSpread, LEVEL1.coneSpread);
+  ctx.closePath();
+  ctx.fillStyle = `rgba(255, 90, 60, ${pulse.toFixed(3)})`;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 120, 80, 0.35)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawStudent(x, color, letter, keyName) {
+  drawCharacter(x, LEVEL1.studentY, LEVEL1.studentRadius, color, letter);
+  // Подсказка про кнопку — на столе под шпаргалкой
+  drawText(keyName, x, LEVEL1.sheetY + LEVEL1.sheetHeight + 24, 13, 'rgba(50, 38, 24, 0.5)', { shadow: false });
+}
+
+function drawFlashes() {
+  for (const flash of level1.flashes) {
+    const progress = flash.timer / flash.duration;
+    const radius = 34 + 70 * progress;
+    const alpha = 0.5 * (1 - progress);
+    ctx.beginPath();
+    ctx.arc(flash.x, flash.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255, 60, 40, ${alpha.toFixed(3)})`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255, 90, 60, ${(alpha + 0.15).toFixed(3)})`;
+    ctx.lineWidth = 4;
+    ctx.stroke();
+  }
+}
+
+function drawFloats() {
+  for (const float of level1.floats) {
+    const progress = float.timer / float.duration;
+    const y = float.y - 46 * progress;
+    ctx.globalAlpha = 1 - progress;
+    drawText(float.text, float.x, y, 24, float.color);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawLevel1Bars() {
+  const centerX = CANVAS_WIDTH / 2;
+  const barY = 40;
+  const barHeight = 30;
+  const barLength = 460;
+  const leftX = centerX - barLength;
+  const rightX = centerX;
+
+  // Фон шкал
+  ctx.fillStyle = 'rgba(20, 16, 12, 0.55)';
+  ctx.fillRect(leftX, barY, barLength, barHeight);
+  ctx.fillRect(rightX, barY, barLength, barHeight);
+
+  // Рамки
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(leftX + 1.5, barY + 1.5, barLength - 3, barHeight - 3);
+  ctx.strokeRect(rightX + 1.5, barY + 1.5, barLength - 3, barHeight - 3);
+
+  // Шкала Саши: красная, заполняется справа налево
+  const sashaWidth = barLength * level1.sashaProgress / 100;
+  if (sashaWidth > 0) {
+    ctx.fillStyle = COLORS.sashaBar;
+    ctx.fillRect(centerX - sashaWidth, barY + 3, sashaWidth, barHeight - 6);
+  }
+
+  // Шкала Даши: жёлтая, заполняется слева направо
+  const dashaWidth = barLength * level1.dashaProgress / 100;
+  if (dashaWidth > 0) {
+    ctx.fillStyle = COLORS.dashaBar;
+    ctx.fillRect(centerX, barY + 3, dashaWidth, barHeight - 6);
+  }
+
+  // Подписи над шкалами
+  drawText('Саша', leftX + barLength / 2, 20, 22, COLORS.sashaBar);
+  drawText('Даша', rightX + barLength / 2, 20, 22, COLORS.dashaBar);
+
+  // Проценты
+  drawText(`${Math.round(level1.sashaProgress)}%`, leftX + barLength / 2, barY + barHeight / 2, 19, '#ffffff');
+  drawText(`${Math.round(level1.dashaProgress)}%`, rightX + barLength / 2, barY + barHeight / 2, 19, '#ffffff');
+}
+
+function drawLevel1Hint() {
+  const hintTime = level1.hintTimer;
+  if (hintTime >= TIMINGS.hintDuration) return;
+
+  const alpha = Math.min(1, hintTime / 0.4) * Math.min(1, (TIMINGS.hintDuration - hintTime) / 0.8);
+  if (alpha <= 0.01) return;
+
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = 'rgba(20, 16, 12, 0.78)';
+  ctx.fillRect(330, 596, 620, 96);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(330, 596, 620, 96);
+
+  drawText('Уровень 1 — Кабинет английского', 640, 622, 22, COLORS.highlight);
+  drawText('Держите кнопку, чтобы открыть шпаргалку: Даша — SPACE, Саша — ENTER',
+    640, 652, 16, '#ffffff', { shadow: false });
+  drawText('Спрячьте её, пока учитель смотрит! Открытая шпаргалка на взгляде — минус 10%.',
+    640, 674, 16, '#f0d9a8', { shadow: false });
+
+  ctx.globalAlpha = 1;
+}
+
+// ============================================================
+// УРОВЕНЬ 1 — ФИНАЛ (LEVEL_1_COMPLETE)
+// ============================================================
+function updateLevel1Complete() {
+  if (level1.completeStage === 'victory' && INPUT.consumePress('enter')) {
+    level1.completeStage = 'soon';
+  }
+}
+
+function drawLevel1Complete() {
+  drawLevel1();
+
+  if (level1.completeStage === 'victory') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    drawText('Уровень 1 пройден!', CANVAS_WIDTH / 2, 296, 54, COLORS.highlight);
+    const pulse = 0.65 + 0.35 * Math.sin(stateTime * 5);
+    ctx.globalAlpha = pulse;
+    drawText('Нажмите ENTER чтобы продолжить', CANVAS_WIDTH / 2, 376, 28, '#ffffff');
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    drawText('Уровень 2 — скоро...', CANVAS_WIDTH / 2, 350, 44, '#ffffff');
+    drawText('Продолжение следует', CANVAS_WIDTH / 2, 412, 22, 'rgba(255, 255, 255, 0.6)');
+  }
+}
+
+// ============================================================
+// ИГРОВОЙ ЦИКЛ: фиксированный шаг 60 FPS через requestAnimationFrame
+// ============================================================
+function update(dt) {
+  stateTime += dt;
+
+  switch (gameState) {
+    case 'PREVIEW_1': updatePreview1(); break;
+    case 'PREVIEW_2': updatePreview2(); break;
+    case 'PREVIEW_2_PROMPT': updatePreview2Prompt(); break;
+    case 'LEVEL_1': updateLevel1(dt); break;
+    case 'LEVEL_1_COMPLETE': updateLevel1Complete(); break;
+  }
+}
+
+function render() {
+  switch (gameState) {
+    case 'PREVIEW_1':
+      drawPreview1();
+      break;
+    case 'PREVIEW_2':
+      drawPreview2(stateTime);
+      break;
+    case 'PREVIEW_2_PROMPT':
+      drawPreview2Prompt();
+      break;
+    case 'LEVEL_1':
+      drawLevel1();
+      drawFadeOverlay(fadeInAlpha(stateTime));
+      break;
+    case 'LEVEL_1_COMPLETE':
+      drawLevel1Complete();
+      break;
+  }
+}
+
+let lastFrameTime = performance.now();
+let accumulator = 0;
+
+function gameLoop(now) {
+  let frameTime = (now - lastFrameTime) / 1000;
+  lastFrameTime = now;
+  if (frameTime > 0.25) frameTime = 0.25; // защита от «залипших» вкладок
+  accumulator += frameTime;
+
+  while (accumulator >= FIXED_STEP) {
+    INPUT.beginTick();
+    update(FIXED_STEP);
+    INPUT.endTick();
+    accumulator -= FIXED_STEP;
+  }
+
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+INPUT.init();
+requestAnimationFrame(gameLoop);
+
+})();
+</script>
+</body>
+</html>
